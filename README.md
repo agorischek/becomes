@@ -146,6 +146,20 @@ Public failures use `BecomesError` with stable `code` values:
 - `bun run test` runs runtime tests.
 - `bun run test:coverage` enforces 100% coverage for emitted lcov metrics.
 - `bun run typecheck:types` runs compile-time API tests.
+- `bun run pack:dry-run` verifies the npm package contents after a build.
 - `bun run lint` runs oxlint.
 - `bun run format` formats the package with oxfmt.
 - `bun run check` runs the full verification suite.
+
+## GitHub Automation
+
+CI runs on pull requests and pushes to `main`. It installs with Bun, runs
+`bun run check`, and verifies the npm package contents with `bun run
+pack:dry-run`.
+
+Releases publish to npm when a GitHub Release is published. The release tag must
+match the package version in `package.json` as `v<version>`, such as `v0.1.0`.
+
+Configure the repository secret `NPM_TOKEN` with an npm automation token that
+can publish the package. The release workflow publishes with npm provenance
+enabled.
