@@ -26,6 +26,11 @@ type RuntimeEnvelope = {
   readonly data: unknown;
 };
 
+/**
+ * Fully normalized runtime state captured by a document definition.
+ *
+ * @internal
+ */
 type DocumentRuntime<TContext> = {
   readonly type: string;
   readonly versions: readonly InternalVersion[];
@@ -38,21 +43,79 @@ type DocumentRuntime<TContext> = {
   readonly versionIndex: ReadonlyMap<VersionId, number>;
 };
 
+/**
+ * Options accepted by {@link defineDocument}.
+ *
+ * @typeParam THistory - Explicit or implicit history builder.
+ * @typeParam TType - Durable document type string.
+ * @typeParam TContext - Migration context type.
+ * @typeParam TEnvelope - Optional custom envelope key configuration.
+ */
 export type DefineDocumentOptions<
   THistory extends AnyHistoryBuilder,
   TType extends string,
   TContext = HistoryContext<THistory>,
   TEnvelope extends EnvelopeOptions | undefined = undefined,
 > = {
+  /** Durable document type string stored in persisted envelopes. */
   readonly type: TType;
+  /** Linear schema history produced by {@link version} or {@link schema}. */
   readonly history: THistory;
+  /**
+   * Factory for creating a new latest-version payload.
+   *
+   * @remarks
+   * The returned value is validated against the latest schema when
+   * {@link DocumentDefinition.create} is called.
+   */
   readonly create?: () => LatestPayload<HistoryVersions<THistory>>;
+  /**
+   * Default context object passed to migrations.
+   *
+   * @remarks
+   * Operation-level context passed to `open` or `migrate` overrides this value.
+   */
   readonly context?: TContext;
+  /** Optional custom persisted envelope key names. */
   readonly envelope?: TEnvelope;
+  /**
+   * Validate each migration output before continuing to the next step.
+   *
+   * @defaultValue true
+   */
   readonly validateAfterMigration?: boolean;
+  /**
+   * Validate the starting payload before running migrations.
+   *
+   * @defaultValue true
+   */
   readonly validateBeforeMigration?: boolean;
 };
 
+/**
+ * Compile a schema history into a document definition.
+ *
+ * @remarks
+ * The returned definition owns envelope parsing, version dispatch, payload
+ * validation, migration execution, saving, metadata inspection, and type
+ * inference. User schemas validate only payload data.
+ *
+ * @example
+ * ```ts
+ * const BoardDocument = defineDocument({
+ *   type: "tasks.board",
+ *   history: version(1, BoardV1)
+ *     .becomes(2, BoardV2, migrateV1ToV2)
+ *     .becomes(3, BoardV3, migrateV2ToV3),
+ *   create: () => ({ columns: [], cards: {}, archivedCardIds: [] }),
+ * });
+ * ```
+ *
+ * @typeParam TType - Durable document type string.
+ * @typeParam THistory - Explicit or implicit history builder.
+ * @typeParam TContext - Migration context type.
+ * @typeParam TEnvelope - Optional custom envelope key configuration.
+ */
 export function defineDocument<
   const TType extends string,
   THistory extends AnyHistoryBuilder,
@@ -101,6 +164,7 @@ export function defineDocument<
       envelopeKeys: undefined as unknown as NormalizeEnvelopeKeys<TEnvelope>,
     },
 
+    /** @inheritdoc */
     create() {
       if (!runtime.create) {
         throw new BecomesError("No create function was provided.", {
@@ -114,12 +178,14 @@ export function defineDocument<
       return parsePayload(runtime, runtime.latest, created, "INVALID_LATEST_PAYLOAD");
     },
 
+    /** @inheritdoc */
     async open(raw: unknown, operationOptions?: OpenOptions<TContext>) {
       const envelope = readEnvelope(runtime, raw);
       const payload = await migratePayload(runtime, envelope, operationOptions);
       return payload as LatestPayload<HistoryVersions<THistory>>;
     },
 
+    /** @inheritdoc */
     save(data: LatestPayload<HistoryVersions<THistory>>, saveOptions?: SaveOptions) {
       const payload =
         saveOptions?.validate === false
@@ -129,12 +195,14 @@ export function defineDocument<
       return makeEnvelope(runtime, runtime.latest.id, payload);
     },
 
+    /** @inheritdoc */
     async migrate(raw: unknown, operationOptions?: MigrateOptions<TContext>) {
       const envelope = readEnvelope(runtime, raw);
       const payload = await migratePayload(runtime, envelope, operationOptions);
       return makeEnvelope(runtime, runtime.latest.id, payload);
     },
 
+    /** @inheritdoc */
     validate(raw: unknown): ValidationResult {
       try {
         const envelope = readEnvelope(runtime, raw);
@@ -159,6 +227,7 @@ export function defineDocument<
       }
     },
 
+    /** @inheritdoc */
     inspect(raw: unknown) {
       try {
         const record = readRecord(raw);
@@ -218,6 +287,11 @@ export function defineDocument<
   >;
 }
 
+/**
+ * Validate and migrate a parsed runtime envelope to the latest payload.
+ *
+ * @internal
+ */
 async function migratePayload<TContext>(
   runtime: DocumentRuntime<TContext>,
   envelope: RuntimeEnvelope,
@@ -257,6 +331,11 @@ async function migratePayload<TContext>(
   return payload;
 }
 
+/**
+ * Parse and validate the `becomes` envelope fields without parsing payload data.
+ *
+ * @internal
+ */
 function readEnvelope<TContext>(runtime: DocumentRuntime<TContext>, raw: unknown): RuntimeEnvelope {
   const record = readRecord(raw);
   const typeValue = record[runtime.keys.typeKey];
@@ -299,6 +378,11 @@ function readEnvelope<TContext>(runtime: DocumentRuntime<TContext>, raw: unknown
   };
 }
 
+/**
+ * Narrow unknown input to a non-array object record.
+ *
+ * @internal
+ */
 function readRecord(raw: unknown): Record<string, unknown> {
   if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
     return raw as Record<string, unknown>;
@@ -309,6 +393,11 @@ function readRecord(raw: unknown): Record<string, unknown> {
   });
 }
 
+/**
+ * Look up the normalized runtime version entry for a supported version.
+ *
+ * @internal
+ */
 function entryForVersion<TContext>(
   runtime: DocumentRuntime<TContext>,
   version: VersionId,
@@ -317,6 +406,12 @@ function entryForVersion<TContext>(
   return runtime.versions[index as number] as InternalVersion;
 }
 
+/**
+ * Validate payload data with a version schema and normalize failures into
+ * stable {@link BecomesError} codes.
+ *
+ * @internal
+ */
 function parsePayload<TContext>(
   runtime: DocumentRuntime<TContext>,
   entry: InternalVersion,
@@ -335,6 +430,11 @@ function parsePayload<TContext>(
   }
 }
 
+/**
+ * Build a persisted envelope using the document's configured key names.
+ *
+ * @internal
+ */
 function makeEnvelope<TContext>(
   runtime: DocumentRuntime<TContext>,
   version: VersionId,

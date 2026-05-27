@@ -1,5 +1,12 @@
 import type { VersionId } from "./types.js";
 
+/**
+ * Stable error codes emitted by public `becomes` APIs.
+ *
+ * @remarks
+ * Codes are intended for programmatic handling. Error messages may be improved
+ * over time, but codes should remain stable within the same major version.
+ */
 export type BecomesErrorCode =
   | "INVALID_ENVELOPE"
   | "TYPE_MISMATCH"
@@ -12,18 +19,41 @@ export type BecomesErrorCode =
   | "CREATE_NOT_DEFINED"
   | "INVALID_HISTORY";
 
+/**
+ * Structured metadata used to construct a {@link BecomesError}.
+ */
 export type BecomesErrorOptions = {
+  /** Stable programmatic failure code. */
   readonly code: BecomesErrorCode;
+  /** Document type involved in the failure, when known. */
   readonly documentType?: string;
+  /** Version involved in the failure, when known. */
   readonly version?: VersionId | string;
+  /** Original parser, migration, or runtime failure. */
   readonly cause?: unknown;
 };
 
+/**
+ * Typed error thrown by `becomes` document APIs.
+ *
+ * @remarks
+ * The error carries stable metadata in addition to the human-readable message:
+ * `code`, `documentType`, `version`, and `cause` when available.
+ */
 export class BecomesError extends Error {
+  /** Stable programmatic failure code. */
   readonly code: BecomesErrorCode;
+  /** Document type involved in the failure, when known. */
   readonly documentType?: string;
+  /** Version involved in the failure, when known. */
   readonly version?: VersionId | string;
 
+  /**
+   * Create a typed `becomes` error.
+   *
+   * @param message - Human-readable failure message.
+   * @param options - Stable error metadata.
+   */
   constructor(message: string, options: BecomesErrorOptions) {
     super(message);
     this.name = "BecomesError";
@@ -43,6 +73,16 @@ export class BecomesError extends Error {
   }
 }
 
+/**
+ * Preserve existing {@link BecomesError} values or wrap unknown failures.
+ *
+ * @remarks
+ * Public result-returning APIs use this helper to expose typed failures without
+ * hiding an already precise `BecomesError`.
+ *
+ * @param error - Unknown error-like value to normalize.
+ * @param fallback - Metadata to use when wrapping a non-`BecomesError`.
+ */
 export function ensureBecomesError(
   error: unknown,
   fallback: BecomesErrorOptions & { readonly message: string },

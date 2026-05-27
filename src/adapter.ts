@@ -4,6 +4,11 @@ type Parser = {
   parse(input: unknown): unknown;
 };
 
+/**
+ * Detect parser-style schemas without invoking user code.
+ *
+ * @internal
+ */
 function hasParse(schema: unknown): schema is Parser {
   return (
     typeof schema === "object" &&
@@ -13,6 +18,11 @@ function hasParse(schema: unknown): schema is Parser {
   );
 }
 
+/**
+ * Detect safeParse-style schemas without invoking user code.
+ *
+ * @internal
+ */
 function hasSafeParse(schema: unknown): schema is SafeParseSchema<unknown> {
   return (
     typeof schema === "object" &&
@@ -22,6 +32,20 @@ function hasSafeParse(schema: unknown): schema is SafeParseSchema<unknown> {
   );
 }
 
+/**
+ * Parse payload data with a supported schema adapter.
+ *
+ * @remarks
+ * `safeParse` is preferred when present so adapters can avoid throwing on the
+ * success path. Parser failures are rethrown as-is here; document APIs catch
+ * them and wrap them in stable {@link BecomesError} codes.
+ *
+ * @param schema - Schema-like object exposing `parse` or `safeParse`.
+ * @param input - Unknown payload data to parse.
+ * @returns Parsed payload with the type inferred from the schema.
+ * @throws Parser-specific failures, `safeParse` failures, or `TypeError` when
+ * the schema has no supported parser method.
+ */
 export function parseWithSchema<TSchema extends AnySchema>(
   schema: TSchema,
   input: unknown,
