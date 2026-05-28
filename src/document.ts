@@ -1,22 +1,22 @@
 import { parseWithSchema } from "./adapter.js";
 import { BecomesError, ensureBecomesError } from "./errors.js";
-import { getInternalHistory } from "./history.js";
+import { getInternalVersionChain } from "./version-chain.js";
 import { DOCUMENT_BRAND } from "./types.js";
-import type { InternalVersion } from "./history.js";
+import type { InternalVersion } from "./version-chain.js";
 import type {
-  AnyHistoryBuilder,
+  AnyVersionChainBuilder,
+  CreateFactory,
   DocumentDefinition,
   EnvelopeKeyConfig,
   EnvelopeOptions,
-  HistoryContext,
-  HistoryVersions,
+  VersionChainContext,
+  VersionChainVersions,
   LatestPayload,
   LatestVersion,
-  MigrateOptions,
   Migration,
   NormalizeEnvelopeKeys,
-  OpenOptions,
-  SaveOptions,
+  DecodeOptions,
+  EncodeOptions,
   ValidationResult,
   VersionId,
 } from "./types.js";
@@ -39,41 +39,44 @@ type DocumentRuntime<TContext> = {
   readonly context: TContext;
   readonly validateBeforeMigration: boolean;
   readonly validateAfterMigration: boolean;
-  readonly create: (() => unknown) | undefined;
+  readonly create: ((...args: never[]) => unknown) | undefined;
   readonly versionIndex: ReadonlyMap<VersionId, number>;
 };
 
 /**
  * Options accepted by {@link defineDocument}.
  *
- * @typeParam THistory - Explicit or implicit history builder.
+ * @typeParam TVersionChain - Fluent version-chain builder.
  * @typeParam TType - Durable document type string.
  * @typeParam TContext - Migration context type.
  * @typeParam TEnvelope - Optional custom envelope key configuration.
  */
 export type DefineDocumentOptions<
-  THistory extends AnyHistoryBuilder,
+  TVersionChain extends AnyVersionChainBuilder,
   TType extends string,
-  TContext = HistoryContext<THistory>,
+  TContext = VersionChainContext<TVersionChain>,
   TEnvelope extends EnvelopeOptions | undefined = undefined,
 > = {
   /** Durable document type string stored in persisted envelopes. */
   readonly type: TType;
-  /** Linear schema history produced by {@link version} or {@link schema}. */
-  readonly history: THistory;
+  /** Linear version chain produced by {@link version}. */
+  readonly versions: TVersionChain;
   /**
    * Factory for creating a new latest-version payload.
    *
    * @remarks
+   * The factory may accept application-defined arguments. Those argument types
+   * are preserved on the returned document's `create` method.
+   *
    * The returned value is validated against the latest schema when
    * {@link DocumentDefinition.create} is called.
    */
-  readonly create?: () => LatestPayload<HistoryVersions<THistory>>;
+  readonly create?: CreateFactory<LatestPayload<VersionChainVersions<TVersionChain>>>;
   /**
    * Default context object passed to migrations.
    *
    * @remarks
-   * Operation-level context passed to `open` or `migrate` overrides this value.
+   * Operation-level context passed to `decode` overrides this value.
    */
   readonly context?: TContext;
   /** Optional custom persisted envelope key names. */
@@ -93,18 +96,18 @@ export type DefineDocumentOptions<
 };
 
 /**
- * Compile a schema history into a document definition.
+ * Compile a version chain into a document definition.
  *
  * @remarks
  * The returned definition owns envelope parsing, version dispatch, payload
- * validation, migration execution, saving, metadata inspection, and type
+ * validation, migration execution, encoding, metadata inspection, and type
  * inference. User schemas validate only payload data.
  *
  * @example
  * ```ts
  * const BoardDocument = defineDocument({
  *   type: "tasks.board",
- *   history: version(1, BoardV1)
+ *   versions: version(1, BoardV1)
  *     .becomes(2, BoardV2, migrateV1ToV2)
  *     .becomes(3, BoardV3, migrateV2ToV3),
  *   create: () => ({ columns: [], cards: {}, archivedCardIds: [] }),
@@ -112,35 +115,69 @@ export type DefineDocumentOptions<
  * ```
  *
  * @typeParam TType - Durable document type string.
- * @typeParam THistory - Explicit or implicit history builder.
+ * @typeParam TVersionChain - Fluent version-chain builder.
  * @typeParam TContext - Migration context type.
  * @typeParam TEnvelope - Optional custom envelope key configuration.
  */
 export function defineDocument<
   const TType extends string,
-  THistory extends AnyHistoryBuilder,
-  TContext = HistoryContext<THistory>,
+  TVersionChain extends AnyVersionChainBuilder,
+  TCreate extends CreateFactory<LatestPayload<VersionChainVersions<TVersionChain>>>,
+  TContext = VersionChainContext<TVersionChain>,
   const TEnvelope extends EnvelopeOptions | undefined = undefined,
 >(
-  options: DefineDocumentOptions<THistory, TType, TContext, TEnvelope>,
+  options: DefineDocumentOptions<TVersionChain, TType, TContext, TEnvelope> & {
+    readonly create: TCreate;
+  },
 ): DocumentDefinition<
   TType,
-  HistoryVersions<THistory>,
+  VersionChainVersions<TVersionChain>,
   TContext,
-  NormalizeEnvelopeKeys<TEnvelope>
+  NormalizeEnvelopeKeys<TEnvelope>,
+  TCreate
+>;
+export function defineDocument<
+  const TType extends string,
+  TVersionChain extends AnyVersionChainBuilder,
+  TContext = VersionChainContext<TVersionChain>,
+  const TEnvelope extends EnvelopeOptions | undefined = undefined,
+>(
+  options: Omit<DefineDocumentOptions<TVersionChain, TType, TContext, TEnvelope>, "create"> & {
+    readonly create?: never;
+  },
+): DocumentDefinition<
+  TType,
+  VersionChainVersions<TVersionChain>,
+  TContext,
+  NormalizeEnvelopeKeys<TEnvelope>,
+  undefined
+>;
+export function defineDocument<
+  const TType extends string,
+  TVersionChain extends AnyVersionChainBuilder,
+  TContext = VersionChainContext<TVersionChain>,
+  const TEnvelope extends EnvelopeOptions | undefined = undefined,
+>(
+  options: DefineDocumentOptions<TVersionChain, TType, TContext, TEnvelope>,
+): DocumentDefinition<
+  TType,
+  VersionChainVersions<TVersionChain>,
+  TContext,
+  NormalizeEnvelopeKeys<TEnvelope>,
+  CreateFactory<LatestPayload<VersionChainVersions<TVersionChain>>> | undefined
 > {
-  const history = getInternalHistory(options.history);
-  const latest = history.versions.at(-1) as InternalVersion;
+  const internalVersionChain = getInternalVersionChain(options.versions);
+  const latest = internalVersionChain.versions.at(-1) as InternalVersion;
 
   const versionIndex = new Map<VersionId, number>();
 
-  history.versions.forEach((entry, index) => {
+  internalVersionChain.versions.forEach((entry, index) => {
     versionIndex.set(entry.id, index);
   });
 
   const runtime: DocumentRuntime<TContext> = {
     type: options.type,
-    versions: history.versions,
+    versions: internalVersionChain.versions,
     latest,
     keys: {
       typeKey: options.envelope?.typeKey ?? "type",
@@ -150,56 +187,99 @@ export function defineDocument<
     context: options.context as TContext,
     validateBeforeMigration: options.validateBeforeMigration ?? true,
     validateAfterMigration: options.validateAfterMigration ?? true,
-    create: options.create,
+    create: options.create as ((...args: never[]) => unknown) | undefined,
     versionIndex,
   };
 
   const document = {
     type: options.type,
-    latestVersion: latest.id as LatestVersion<HistoryVersions<THistory>>,
+    latestVersion: latest.id as LatestVersion<VersionChainVersions<TVersionChain>>,
     [DOCUMENT_BRAND]: {
       type: options.type,
-      versions: undefined as unknown as HistoryVersions<THistory>,
+      versions: undefined as unknown as VersionChainVersions<TVersionChain>,
       context: undefined as unknown as TContext,
       envelopeKeys: undefined as unknown as NormalizeEnvelopeKeys<TEnvelope>,
     },
 
     /** @inheritdoc */
-    create() {
-      if (!runtime.create) {
-        throw new BecomesError("No create function was provided.", {
-          code: "CREATE_NOT_DEFINED",
-          documentType: runtime.type,
-          version: runtime.latest.id,
-        });
+    async decode(raw: unknown, operationOptions?: DecodeOptions<TContext>) {
+      if (raw === null || raw === undefined) {
+        return {
+          status: "missing",
+        };
       }
 
-      const created = runtime.create();
-      return parsePayload(runtime, runtime.latest, created, "INVALID_LATEST_PAYLOAD");
+      try {
+        const envelope = readEnvelope(runtime, raw);
+        const payload = await migratePayload(runtime, envelope, operationOptions);
+        const latestEnvelope = makeEnvelope(runtime, runtime.latest.id, payload);
+
+        if (Object.is(envelope.version, runtime.latest.id)) {
+          return {
+            status: "current",
+            value: payload,
+            version: envelope.version,
+            envelope: latestEnvelope,
+          };
+        }
+
+        return {
+          status: "migrated",
+          value: payload,
+          fromVersion: envelope.version,
+          toVersion: runtime.latest.id,
+          envelope: latestEnvelope,
+        };
+      } catch (error) {
+        const becomesError = ensureBecomesError(error, {
+          code: "INVALID_ENVELOPE",
+          documentType: runtime.type,
+          message: "Decode failed.",
+        });
+
+        if (becomesError.code === "UNSUPPORTED_VERSION" && becomesError.version !== undefined) {
+          return {
+            status: "unsupported-version",
+            version: becomesError.version,
+            error: becomesError,
+          };
+        }
+
+        return {
+          status: "invalid",
+          error: becomesError,
+        };
+      }
     },
 
     /** @inheritdoc */
-    async open(raw: unknown, operationOptions?: OpenOptions<TContext>) {
-      const envelope = readEnvelope(runtime, raw);
-      const payload = await migratePayload(runtime, envelope, operationOptions);
-      return payload as LatestPayload<HistoryVersions<THistory>>;
-    },
+    encode(
+      data: LatestPayload<VersionChainVersions<TVersionChain>>,
+      encodeOptions?: EncodeOptions,
+    ) {
+      try {
+        const payload =
+          encodeOptions?.validate === false
+            ? data
+            : parsePayload(runtime, runtime.latest, data, "INVALID_LATEST_PAYLOAD");
 
-    /** @inheritdoc */
-    save(data: LatestPayload<HistoryVersions<THistory>>, saveOptions?: SaveOptions) {
-      const payload =
-        saveOptions?.validate === false
-          ? data
-          : parsePayload(runtime, runtime.latest, data, "INVALID_LATEST_PAYLOAD");
-
-      return makeEnvelope(runtime, runtime.latest.id, payload);
-    },
-
-    /** @inheritdoc */
-    async migrate(raw: unknown, operationOptions?: MigrateOptions<TContext>) {
-      const envelope = readEnvelope(runtime, raw);
-      const payload = await migratePayload(runtime, envelope, operationOptions);
-      return makeEnvelope(runtime, runtime.latest.id, payload);
+        return {
+          status: "encoded",
+          value: payload,
+          version: runtime.latest.id,
+          envelope: makeEnvelope(runtime, runtime.latest.id, payload),
+        };
+      } catch (error) {
+        return {
+          status: "invalid",
+          error: ensureBecomesError(error, {
+            code: "INVALID_LATEST_PAYLOAD",
+            documentType: runtime.type,
+            version: runtime.latest.id,
+            message: "Encode failed.",
+          }),
+        };
+      }
     },
 
     /** @inheritdoc */
@@ -279,11 +359,24 @@ export function defineDocument<
     },
   };
 
+  if (runtime.create) {
+    const create = runtime.create;
+
+    Object.assign(document, {
+      /** @inheritdoc */
+      create(...args: never[]) {
+        const created = create(...args);
+        return parsePayload(runtime, runtime.latest, created, "INVALID_LATEST_PAYLOAD");
+      },
+    });
+  }
+
   return document as DocumentDefinition<
     TType,
-    HistoryVersions<THistory>,
+    VersionChainVersions<TVersionChain>,
     TContext,
-    NormalizeEnvelopeKeys<TEnvelope>
+    NormalizeEnvelopeKeys<TEnvelope>,
+    CreateFactory<LatestPayload<VersionChainVersions<TVersionChain>>> | undefined
   >;
 }
 
@@ -295,7 +388,7 @@ export function defineDocument<
 async function migratePayload<TContext>(
   runtime: DocumentRuntime<TContext>,
   envelope: RuntimeEnvelope,
-  options: OpenOptions<TContext> | undefined,
+  options: DecodeOptions<TContext> | undefined,
 ): Promise<unknown> {
   const startIndex = runtime.versionIndex.get(envelope.version) as number;
 
@@ -356,11 +449,18 @@ function readEnvelope<TContext>(runtime: DocumentRuntime<TContext>, raw: unknown
 
   const versionValue = record[runtime.keys.versionKey];
 
+  if (typeof versionValue !== "number" && typeof versionValue !== "string") {
+    throw new BecomesError("Envelope version must be a string or number.", {
+      code: "INVALID_ENVELOPE",
+      documentType: runtime.type,
+    });
+  }
+
   if (!runtime.versionIndex.has(versionValue as VersionId)) {
     throw new BecomesError(`Unsupported version: ${String(versionValue)}.`, {
       code: "UNSUPPORTED_VERSION",
       documentType: runtime.type,
-      version: String(versionValue),
+      version: versionValue,
     });
   }
 

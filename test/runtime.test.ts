@@ -3,8 +3,9 @@ import {
   BecomesError,
   defineDocument,
   parseWithSchema,
-  schema,
   version,
+  type DecodeResult,
+  type EncodeResult,
   type Schema,
 } from "../src/index.js";
 import { ensureBecomesError } from "../src/errors.js";
@@ -43,7 +44,7 @@ const v3Schema = objectSchema<V3>((record) => ({
   done: expectBoolean(record.done, "done"),
 }));
 
-const explicitHistory = version<1, typeof v1Schema, TestContext>(1, v1Schema)
+const explicitVersions = version<1, typeof v1Schema, TestContext>(1, v1Schema)
   .becomes(2, v2Schema, (value) => ({
     title: value.title,
     count: 1,
@@ -55,7 +56,7 @@ const explicitHistory = version<1, typeof v1Schema, TestContext>(1, v1Schema)
 
 const TestDocument = defineDocument({
   type: "tests.note",
-  history: explicitHistory,
+  versions: explicitVersions,
   context: {
     doneDefault: false,
   },
@@ -67,9 +68,9 @@ const TestDocument = defineDocument({
 });
 
 describe("document runtime APIs", () => {
-  test("opens latest-version documents without migration", async () => {
+  test("decodes latest-version documents without migration", async () => {
     await expect(
-      TestDocument.open({
+      TestDocument.decode({
         type: "tests.note",
         version: 3,
         data: {
@@ -79,15 +80,28 @@ describe("document runtime APIs", () => {
         },
       }),
     ).resolves.toEqual({
-      title: "ready",
-      count: 2,
-      done: true,
+      status: "current",
+      value: {
+        title: "ready",
+        count: 2,
+        done: true,
+      },
+      version: 3,
+      envelope: {
+        type: "tests.note",
+        version: 3,
+        data: {
+          title: "ready",
+          count: 2,
+          done: true,
+        },
+      },
     });
   });
 
-  test("opens older documents and migrates to latest", async () => {
+  test("decodes older documents and migrates to latest", async () => {
     await expect(
-      TestDocument.open({
+      TestDocument.decode({
         type: "tests.note",
         version: 1,
         data: {
@@ -95,15 +109,29 @@ describe("document runtime APIs", () => {
         },
       }),
     ).resolves.toEqual({
-      title: "old",
-      count: 1,
-      done: false,
+      status: "migrated",
+      value: {
+        title: "old",
+        count: 1,
+        done: false,
+      },
+      fromVersion: 1,
+      toVersion: 3,
+      envelope: {
+        type: "tests.note",
+        version: 3,
+        data: {
+          title: "old",
+          count: 1,
+          done: false,
+        },
+      },
     });
   });
 
   test("uses operation context for async migrations", async () => {
     await expect(
-      TestDocument.open(
+      TestDocument.decode(
         {
           type: "tests.note",
           version: 2,
@@ -119,9 +147,23 @@ describe("document runtime APIs", () => {
         },
       ),
     ).resolves.toEqual({
-      title: "middle",
-      count: 5,
-      done: true,
+      status: "migrated",
+      value: {
+        title: "middle",
+        count: 5,
+        done: true,
+      },
+      fromVersion: 2,
+      toVersion: 3,
+      envelope: {
+        type: "tests.note",
+        version: 3,
+        data: {
+          title: "middle",
+          count: 5,
+          done: true,
+        },
+      },
     });
   });
 
@@ -129,7 +171,7 @@ describe("document runtime APIs", () => {
     const migrationCalls: string[] = [];
     const document = defineDocument({
       type: "tests.before",
-      history: version(1, v1Schema).becomes(2, v2Schema, (value) => {
+      versions: version(1, v1Schema).becomes(2, v2Schema, (value) => {
         migrationCalls.push(value.title);
         return {
           title: value.title,
@@ -138,8 +180,8 @@ describe("document runtime APIs", () => {
       }),
     });
 
-    const error = await expectRejectCode(
-      document.open({
+    const error = await expectDecodeInvalid(
+      document.decode({
         type: "tests.before",
         version: 1,
         data: {
@@ -156,7 +198,7 @@ describe("document runtime APIs", () => {
   test("validates payload after migration", async () => {
     const document = defineDocument({
       type: "tests.after",
-      history: version(1, v1Schema).becomes(
+      versions: version(1, v1Schema).becomes(
         2,
         v2Schema,
         () =>
@@ -167,8 +209,8 @@ describe("document runtime APIs", () => {
       ),
     });
 
-    await expectRejectCode(
-      document.open({
+    await expectDecodeInvalid(
+      document.decode({
         type: "tests.after",
         version: 1,
         data: {
@@ -182,7 +224,7 @@ describe("document runtime APIs", () => {
   test("can skip before and after migration validation", async () => {
     const document = defineDocument({
       type: "tests.skip",
-      history: version(1, v1Schema).becomes(
+      versions: version(1, v1Schema).becomes(
         2,
         v2Schema,
         () =>
@@ -193,7 +235,7 @@ describe("document runtime APIs", () => {
       ),
     });
 
-    const skipped = await document.open(
+    const skipped = await document.decode(
       {
         type: "tests.skip",
         version: 1,
@@ -208,19 +250,45 @@ describe("document runtime APIs", () => {
     );
 
     expect(skipped as unknown).toEqual({
-      title: "unchecked",
-      count: "also unchecked",
+      status: "migrated",
+      value: {
+        title: "unchecked",
+        count: "also unchecked",
+      },
+      fromVersion: 1,
+      toVersion: 2,
+      envelope: {
+        type: "tests.skip",
+        version: 2,
+        data: {
+          title: "unchecked",
+          count: "also unchecked",
+        },
+      },
     });
   });
 
-  test("rejects a missing or malformed envelope", async () => {
-    await expectRejectCode(TestDocument.open(null), "INVALID_ENVELOPE");
-    await expectRejectCode(TestDocument.open([]), "INVALID_ENVELOPE");
+  test("reports missing and malformed envelopes", async () => {
+    await expect(TestDocument.decode(null)).resolves.toEqual({
+      status: "missing",
+    });
+    await expect(TestDocument.decode(undefined)).resolves.toEqual({
+      status: "missing",
+    });
+    await expectDecodeInvalid(TestDocument.decode([]), "INVALID_ENVELOPE");
+    await expectDecodeInvalid(
+      TestDocument.decode({
+        type: "tests.note",
+        version: null,
+        data: {},
+      }),
+      "INVALID_ENVELOPE",
+    );
   });
 
-  test("rejects the wrong document type", async () => {
-    await expectRejectCode(
-      TestDocument.open({
+  test("reports the wrong document type", async () => {
+    await expectDecodeInvalid(
+      TestDocument.decode({
         type: "tests.other",
         version: 1,
         data: {
@@ -231,9 +299,9 @@ describe("document runtime APIs", () => {
     );
   });
 
-  test("rejects a missing version", async () => {
-    await expectRejectCode(
-      TestDocument.open({
+  test("reports a missing version", async () => {
+    await expectDecodeInvalid(
+      TestDocument.decode({
         type: "tests.note",
         data: {
           title: "old",
@@ -243,24 +311,33 @@ describe("document runtime APIs", () => {
     );
   });
 
-  test("rejects an unknown version", async () => {
-    const error = await expectRejectCode(
-      TestDocument.open({
+  test("reports an unknown version", async () => {
+    const error = await expectDecodeUnsupported(
+      TestDocument.decode({
         type: "tests.note",
         version: 99,
         data: {
           title: "future",
         },
       }),
-      "UNSUPPORTED_VERSION",
     );
 
-    expect(error.version).toBe("99");
+    expect(error.version).toBe(99);
+
+    const stringVersionError = await expectDecodeUnsupported(
+      TestDocument.decode({
+        type: "tests.note",
+        version: "future",
+        data: {},
+      }),
+    );
+
+    expect(stringVersionError.version).toBe("future");
   });
 
-  test("rejects envelopes without data", async () => {
-    await expectRejectCode(
-      TestDocument.open({
+  test("reports envelopes without data", async () => {
+    await expectDecodeInvalid(
+      TestDocument.decode({
         type: "tests.note",
         version: 1,
       }),
@@ -268,9 +345,9 @@ describe("document runtime APIs", () => {
     );
   });
 
-  test("rejects invalid latest payloads", async () => {
-    await expectRejectCode(
-      TestDocument.open({
+  test("reports invalid latest payloads", async () => {
+    await expectDecodeInvalid(
+      TestDocument.decode({
         type: "tests.note",
         version: 3,
         data: {
@@ -283,17 +360,17 @@ describe("document runtime APIs", () => {
     );
   });
 
-  test("wraps thrown migration errors", async () => {
+  test("reports thrown migration errors", async () => {
     const cause = new Error("boom");
     const document = defineDocument({
       type: "tests.throw",
-      history: version(1, v1Schema).becomes(2, v2Schema, () => {
+      versions: version(1, v1Schema).becomes(2, v2Schema, () => {
         throw cause;
       }),
     });
 
-    const error = await expectRejectCode(
-      document.open({
+    const error = await expectDecodeInvalid(
+      document.decode({
         type: "tests.throw",
         version: 1,
         data: {
@@ -306,27 +383,36 @@ describe("document runtime APIs", () => {
     expect(error.cause).toBe(cause);
   });
 
-  test("saves latest payload with the correct envelope", () => {
+  test("encodes latest payload with the correct envelope", () => {
     expect(
-      TestDocument.save({
+      TestDocument.encode({
         title: "saved",
         count: 7,
         done: true,
       }),
     ).toEqual({
-      type: "tests.note",
+      status: "encoded",
       version: 3,
-      data: {
+      value: {
         title: "saved",
         count: 7,
         done: true,
       },
+      envelope: {
+        type: "tests.note",
+        version: 3,
+        data: {
+          title: "saved",
+          count: 7,
+          done: true,
+        },
+      },
     });
   });
 
-  test("can skip save validation", () => {
+  test("can skip encode validation", () => {
     expect(
-      TestDocument.save(
+      TestDocument.encode(
         {
           title: "saved",
           count: "not checked",
@@ -337,28 +423,40 @@ describe("document runtime APIs", () => {
         },
       ) as unknown,
     ).toEqual({
-      type: "tests.note",
+      status: "encoded",
       version: 3,
-      data: {
+      value: {
         title: "saved",
         count: "not checked",
         done: true,
       },
+      envelope: {
+        type: "tests.note",
+        version: 3,
+        data: {
+          title: "saved",
+          count: "not checked",
+          done: true,
+        },
+      },
     });
   });
 
-  test("rejects invalid latest payloads on save and create", () => {
-    expect(() =>
-      TestDocument.save({
+  test("reports invalid latest payloads on encode and rejects invalid create output", () => {
+    const error = expectEncodeInvalid(
+      TestDocument.encode({
         title: "bad",
         count: Number.NaN,
         done: true,
       }),
-    ).toThrow(BecomesError);
+      "INVALID_LATEST_PAYLOAD",
+    );
+
+    expect(error.version).toBe(3);
 
     const invalidCreate = defineDocument({
       type: "tests.invalid-create",
-      history: version(1, v3Schema),
+      versions: version(1, v3Schema),
       create: () =>
         ({
           title: "bad",
@@ -368,45 +466,42 @@ describe("document runtime APIs", () => {
     expect(() => invalidCreate.create()).toThrow(BecomesError);
   });
 
-  test("creates latest payloads and rejects missing create functions", () => {
+  test("creates latest payloads and omits missing create functions", () => {
     expect(TestDocument.create()).toEqual({
       title: "new",
       count: 0,
       done: false,
     });
 
+    const documentWithArgs = defineDocument({
+      type: "tests.create-args",
+      versions: version(1, v3Schema),
+      create: (title: string, done: boolean) => ({
+        title,
+        count: title.length,
+        done,
+      }),
+    });
+
+    expect(documentWithArgs.create("from args", true)).toEqual({
+      title: "from args",
+      count: 9,
+      done: true,
+    });
+
     const document = defineDocument({
       type: "tests.no-create",
-      history: version(1, v1Schema),
+      versions: version(1, v1Schema),
     });
 
-    expect(() => document.create()).toThrow(BecomesError);
-  });
-
-  test("migrates and returns the latest envelope", async () => {
-    await expect(
-      TestDocument.migrate({
-        type: "tests.note",
-        version: 1,
-        data: {
-          title: "persisted",
-        },
-      }),
-    ).resolves.toEqual({
-      type: "tests.note",
-      version: 3,
-      data: {
-        title: "persisted",
-        count: 1,
-        done: false,
-      },
-    });
+    expect("create" in document).toBe(false);
+    expect("migrate" in TestDocument).toBe(false);
   });
 
   test("validates without migration", () => {
     const document = defineDocument({
       type: "tests.validate",
-      history: version(1, v1Schema).becomes(2, v2Schema, () => {
+      versions: version(1, v1Schema).becomes(2, v2Schema, () => {
         throw new Error("validate should not migrate");
       }),
     });
@@ -441,7 +536,7 @@ describe("document runtime APIs", () => {
   test("inspects metadata without payload validation or migration", () => {
     const document = defineDocument({
       type: "tests.inspect",
-      history: version(1, v1Schema).becomes(2, v2Schema, () => {
+      versions: version(1, v1Schema).becomes(2, v2Schema, () => {
         throw new Error("inspect should not migrate");
       }),
     });
@@ -497,14 +592,14 @@ describe("document runtime APIs", () => {
   test("supports explicit non-contiguous version ids", async () => {
     const document = defineDocument({
       type: "tests.protocol",
-      history: version(10, v1Schema).becomes(20, v2Schema, (value) => ({
+      versions: version(10, v1Schema).becomes(20, v2Schema, (value) => ({
         title: value.title,
         count: 20,
       })),
     });
 
     await expect(
-      document.open({
+      document.decode({
         type: "tests.protocol",
         version: 10,
         data: {
@@ -512,8 +607,21 @@ describe("document runtime APIs", () => {
         },
       }),
     ).resolves.toEqual({
-      title: "old",
-      count: 20,
+      status: "migrated",
+      value: {
+        title: "old",
+        count: 20,
+      },
+      fromVersion: 10,
+      toVersion: 20,
+      envelope: {
+        type: "tests.protocol",
+        version: 20,
+        data: {
+          title: "old",
+          count: 20,
+        },
+      },
     });
 
     expect(document.latestVersion).toBe(20);
@@ -526,40 +634,22 @@ describe("document runtime APIs", () => {
         count: 1,
       })),
     ).toThrow(BecomesError);
-  });
 
-  test("supports implicit positional version ids", async () => {
-    const document = defineDocument({
-      type: "tests.implicit",
-      history: schema(v1Schema).becomes(v2Schema, (value) => ({
+    try {
+      version(1, v1Schema).becomes(1, v2Schema, (value) => ({
         title: value.title,
-        count: 2,
-      })),
-    });
-
-    expect(document.latestVersion).toBe(2);
-    expect(
-      await document.migrate({
-        type: "tests.implicit",
-        version: 1,
-        data: {
-          title: "old",
-        },
-      }),
-    ).toEqual({
-      type: "tests.implicit",
-      version: 2,
-      data: {
-        title: "old",
-        count: 2,
-      },
-    });
+        count: 1,
+      }));
+    } catch (error) {
+      expect(error).toBeInstanceOf(BecomesError);
+      expect((error as BecomesError).code).toBe("INVALID_VERSION_CHAIN");
+    }
   });
 
   test("supports custom envelope keys", async () => {
     const document = defineDocument({
       type: "tests.custom",
-      history: version(1, v1Schema),
+      versions: version(1, v1Schema),
       envelope: {
         typeKey: "kind",
         versionKey: "revision",
@@ -575,15 +665,27 @@ describe("document runtime APIs", () => {
       },
     } as const;
 
-    await expect(document.open(raw)).resolves.toEqual({
-      title: "custom",
+    await expect(document.decode(raw)).resolves.toEqual({
+      status: "current",
+      value: {
+        title: "custom",
+      },
+      version: 1,
+      envelope: raw,
     });
 
     expect(
-      document.save({
+      document.encode({
         title: "custom",
       }),
-    ).toEqual(raw);
+    ).toEqual({
+      status: "encoded",
+      value: {
+        title: "custom",
+      },
+      version: 1,
+      envelope: raw,
+    });
   });
 });
 
@@ -689,17 +791,50 @@ function expectBoolean(value: unknown, key: string): boolean {
   throw new Error(`Expected ${key} to be a boolean.`);
 }
 
-async function expectRejectCode(
-  promise: Promise<unknown>,
+async function expectDecodeInvalid(
+  promise: Promise<DecodeResult<unknown, unknown>>,
   code: BecomesError["code"],
 ): Promise<BecomesError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(BecomesError);
-    expect((error as BecomesError).code).toBe(code);
-    return error as BecomesError;
+  const result = await promise;
+
+  expect(result.status).toBe("invalid");
+
+  if (result.status !== "invalid") {
+    throw new Error(`Expected invalid decode result with ${code}.`);
   }
 
-  throw new Error(`Expected rejection with ${code}.`);
+  expect(result.error).toBeInstanceOf(BecomesError);
+  expect(result.error.code).toBe(code);
+  return result.error;
+}
+
+async function expectDecodeUnsupported(
+  promise: Promise<DecodeResult<unknown, unknown>>,
+): Promise<BecomesError> {
+  const result = await promise;
+
+  expect(result.status).toBe("unsupported-version");
+
+  if (result.status !== "unsupported-version") {
+    throw new Error("Expected unsupported-version decode result.");
+  }
+
+  expect(result.error).toBeInstanceOf(BecomesError);
+  expect(result.error.code).toBe("UNSUPPORTED_VERSION");
+  return result.error;
+}
+
+function expectEncodeInvalid(
+  result: EncodeResult<unknown, unknown>,
+  code: BecomesError["code"],
+): BecomesError {
+  expect(result.status).toBe("invalid");
+
+  if (result.status !== "invalid") {
+    throw new Error(`Expected invalid encode result with ${code}.`);
+  }
+
+  expect(result.error).toBeInstanceOf(BecomesError);
+  expect(result.error.code).toBe(code);
+  return result.error;
 }

@@ -16,8 +16,7 @@ export type BecomesErrorCode =
   | "MIGRATION_FAILED"
   | "INVALID_MIGRATION_OUTPUT"
   | "INVALID_LATEST_PAYLOAD"
-  | "CREATE_NOT_DEFINED"
-  | "INVALID_HISTORY";
+  | "INVALID_VERSION_CHAIN";
 
 /**
  * Structured metadata used to construct a {@link BecomesError}.

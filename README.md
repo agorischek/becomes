@@ -17,16 +17,17 @@ shape, so the schema registry and migration registry cannot drift apart.
 bun add becomes
 ```
 
-## Explicit Versions
+## Versions
 
-Use explicit versions when version identifiers are durable protocol artifacts.
+Version identifiers are durable protocol artifacts and must be authored
+explicitly.
 
 ```ts
 import { defineDocument, version, type InferLatest } from "becomes";
 
 const BoardDocument = defineDocument({
   type: "tasks.board",
-  history: version(1, BoardV1Schema)
+  versions: version(1, BoardV1Schema)
     .becomes(2, BoardV2Schema, (v1) => ({
       columns: [],
       cards: Object.fromEntries(v1.cards.map((card) => [card.id, card])),
@@ -45,26 +46,8 @@ const BoardDocument = defineDocument({
 type Board = InferLatest<typeof BoardDocument>;
 ```
 
-Explicit versions are treated as authored chain labels, not arithmetic indexes.
+Versions are treated as authored chain labels, not arithmetic indexes.
 `version(10, V1).becomes(20, V2, migrate)` is valid.
-
-## Implicit Versions
-
-Use implicit versions for simpler local formats. Versions start at `1` and
-increment by position.
-
-```ts
-import { defineDocument, schema } from "becomes";
-
-const BoardDocument = defineDocument({
-  type: "tasks.board",
-  history: schema(BoardV1Schema)
-    .becomes(BoardV2Schema, migrateV1ToV2)
-    .becomes(BoardV3Schema, migrateV2ToV3),
-});
-```
-
-The implicit and explicit APIs normalize to the same internal history shape.
 
 ## Envelope
 
@@ -87,17 +70,71 @@ Custom envelope keys are supported with `envelope.typeKey`,
 
 ## Runtime API
 
-- `open(raw)` validates an unknown persisted envelope, migrates it to latest,
-  and returns the latest payload.
-- `save(data)` validates the latest payload and wraps it in an envelope.
-- `create()` returns a validated latest payload from the configured factory.
-- `migrate(envelope)` migrates to latest and returns the latest envelope.
+These methods work on values already in memory. They do not read files, write
+files, or talk to storage adapters.
+
+- `decode(raw)` validates an unknown persisted envelope, migrates it to latest,
+  and returns a non-throwing status result.
+- `encode(data)` validates the latest payload and returns a non-throwing status
+  result with the latest envelope.
+- `create(...args)` returns a validated latest payload from the configured
+  factory when one is configured. Factory argument types are preserved, and
+  invalid factory output still throws because it is a local programmer contract.
 - `validate(raw)` validates the declared envelope and payload without
   migration.
 - `inspect(raw)` reads metadata without validating payload data or running
   migrations.
 
-Async migrations are supported. `open` and `migrate` always return promises.
+Async migrations are supported. `decode` always returns a promise.
+
+Create factories may accept application-defined arguments:
+
+```ts
+const BoardDocument = defineDocument({
+  type: "tasks.board",
+  versions,
+  create: (title: string) => ({
+    title,
+    columns: [],
+    cards: {},
+  }),
+});
+
+BoardDocument.create("Roadmap");
+```
+
+`decode` models ordinary durable-document read states explicitly:
+
+```ts
+const result = await BoardDocument.decode(raw);
+
+if (result.status === "current" || result.status === "migrated") {
+  result.value;
+  result.envelope;
+}
+
+if (result.status === "missing") {
+  // Nothing has been persisted yet.
+}
+
+if (result.status === "unsupported-version" || result.status === "invalid") {
+  result.error.code;
+}
+```
+
+`encode` uses the same explicit status style for write-boundary payloads:
+
+```ts
+const result = BoardDocument.encode(board);
+
+if (result.status === "encoded") {
+  result.envelope;
+}
+
+if (result.status === "invalid") {
+  result.error.code;
+}
+```
 
 ## Schema Adapter
 
@@ -137,8 +174,7 @@ Public failures use `BecomesError` with stable `code` values:
 - `MIGRATION_FAILED`
 - `INVALID_MIGRATION_OUTPUT`
 - `INVALID_LATEST_PAYLOAD`
-- `CREATE_NOT_DEFINED`
-- `INVALID_HISTORY`
+- `INVALID_VERSION_CHAIN`
 
 ## Scripts
 

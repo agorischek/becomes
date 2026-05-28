@@ -1,7 +1,8 @@
 import {
   defineDocument,
-  schema,
   version,
+  type DecodeResult,
+  type EncodeResult,
   type InferEnvelope,
   type InferLatest,
   type InferVersion,
@@ -52,7 +53,7 @@ const v3Schema: Schema<V3> = {
   },
 };
 
-const explicitHistory = version<1, typeof v1Schema, Context>(1, v1Schema)
+const explicitVersions = version<1, typeof v1Schema, Context>(1, v1Schema)
   .becomes(2, v2Schema, (value, context) => {
     type _Input = Expect<Equal<typeof value, V1>>;
     type _Context = Expect<Equal<typeof context, Context>>;
@@ -73,7 +74,7 @@ const explicitHistory = version<1, typeof v1Schema, Context>(1, v1Schema)
 
 const ExplicitDocument = defineDocument({
   type: "tests.types",
-  history: explicitHistory,
+  versions: explicitVersions,
   context: {
     doneDefault: false,
   },
@@ -106,23 +107,58 @@ type ExpectedEnvelope =
     };
 
 type _Envelope = Expect<Equal<InferEnvelope<typeof ExplicitDocument>, ExpectedEnvelope>>;
+type _DecodeResult = Expect<
+  Equal<
+    ReturnType<typeof ExplicitDocument.decode>,
+    Promise<DecodeResult<V3, Extract<ExpectedEnvelope, { version: 3 }>>>
+  >
+>;
+type _EncodeResult = Expect<
+  Equal<
+    ReturnType<typeof ExplicitDocument.encode>,
+    EncodeResult<V3, Extract<ExpectedEnvelope, { version: 3 }>>
+  >
+>;
+type _CreateReturn = Expect<Equal<ReturnType<typeof ExplicitDocument.create>, V3>>;
 
-const ImplicitDocument = defineDocument({
-  type: "tests.implicit-types",
-  history: schema(v1Schema)
-    .becomes(v2Schema, (value) => ({
-      title: value.title,
-      count: 1,
-    }))
-    .becomes(v3Schema, (value) => ({
-      ...value,
-      done: false,
-    })),
+const CreateArgsDocument = defineDocument({
+  type: "tests.create-args-types",
+  versions: version(1, v3Schema),
+  create: (title: string, done: boolean) => ({
+    title,
+    count: title.length,
+    done,
+  }),
 });
 
-type _ExplicitImplicitLatest = Expect<
-  Equal<InferLatest<typeof ExplicitDocument>, InferLatest<typeof ImplicitDocument>>
+type _CreateArgs = Expect<Equal<Parameters<typeof CreateArgsDocument.create>, [string, boolean]>>;
+type _CreateArgsReturn = Expect<Equal<ReturnType<typeof CreateArgsDocument.create>, V3>>;
+
+CreateArgsDocument.create("typed", true);
+// @ts-expect-error create() requires the configured title argument.
+CreateArgsDocument.create();
+// @ts-expect-error create() requires a boolean second argument.
+CreateArgsDocument.create("typed", "yes");
+
+const NoCreateDocument = defineDocument({
+  type: "tests.no-create-types",
+  versions: version(1, v1Schema),
+});
+
+type _NoCreateKey = Expect<
+  Equal<"create" extends keyof typeof NoCreateDocument ? true : false, false>
 >;
+
+// @ts-expect-error create() is omitted when no create factory is configured.
+NoCreateDocument.create();
+
+// @ts-expect-error migrate() is not part of the document boundary API.
+ExplicitDocument.migrate({});
+
+// @ts-expect-error defineDocument requires the versions option.
+defineDocument({
+  type: "tests.missing-versions-option",
+});
 
 version(1, v1Schema).becomes(
   2,

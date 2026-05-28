@@ -1,12 +1,12 @@
 import type { BecomesError } from "./errors.js";
 
 /**
- * Type-only brand used to carry strongly typed history metadata through the
- * fluent builder API.
+ * Type-only brand used to carry strongly typed version-chain metadata through
+ * the fluent builder API.
  *
  * @internal
  */
-export const HISTORY_BRAND: unique symbol = Symbol("becomes.history");
+export const VERSION_CHAIN_BRAND: unique symbol = Symbol("becomes.version-chain");
 
 /**
  * Type-only brand used to carry strongly typed document metadata for inference
@@ -20,8 +20,7 @@ export const DOCUMENT_BRAND: unique symbol = Symbol("becomes.document");
 /**
  * Version identifier supported by the initial implementation.
  *
- * Explicit histories preserve authored numeric labels exactly; implicit
- * histories generate positive integers starting at `1`.
+ * Version chains preserve authored numeric labels exactly.
  *
  * @remarks
  * The public type is intentionally centralized so a future release can widen it
@@ -100,7 +99,7 @@ export type Schema<T> = StandardSchema<T>;
 
 /**
  * Schema with unknown payload type, used internally when runtime code stores a
- * heterogeneous history.
+ * heterogeneous version chain.
  *
  * @internal
  */
@@ -131,7 +130,7 @@ export type InferSchema<TSchema> = TSchema extends {
 
 /**
  * Function that transforms a valid payload from one version into a valid payload
- * for the next version in a document history.
+ * for the next version in a document's version chain.
  *
  * @typeParam From - Previous version payload.
  * @typeParam To - Next version payload.
@@ -143,7 +142,7 @@ export type Migration<From, To, Context = unknown> = (
 ) => To | Promise<To>;
 
 /**
- * Type-level entry in a schema history.
+ * Type-level entry in a schema version chain.
  *
  * @typeParam TId - Version identifier for the payload schema.
  * @typeParam TSchema - Schema adapter for the payload at this version.
@@ -177,7 +176,7 @@ export type LatestEntry<TVersions extends readonly AnyVersionEntry[]> = TVersion
   : never;
 
 /**
- * Version identifier for the latest entry in a history tuple.
+ * Version identifier for the latest entry in a version tuple.
  *
  * @internal
  */
@@ -185,7 +184,7 @@ export type LatestVersion<TVersions extends readonly AnyVersionEntry[]> =
   LatestEntry<TVersions>["id"];
 
 /**
- * Payload type for the latest entry in a history tuple.
+ * Payload type for the latest entry in a version tuple.
  *
  * @internal
  */
@@ -194,14 +193,7 @@ export type LatestPayload<TVersions extends readonly AnyVersionEntry[]> = InferS
 >;
 
 /**
- * Union of every version identifier in a history tuple.
- *
- * @internal
- */
-export type KnownVersion<TVersions extends readonly AnyVersionEntry[]> = TVersions[number]["id"];
-
-/**
- * Payload type for a specific version in a history tuple.
+ * Payload type for a specific version in a version tuple.
  *
  * @internal
  */
@@ -325,30 +317,29 @@ export type EnvelopeUnion<
     : never
   : never;
 
-type BuildTuple<
-  TLength extends number,
-  TItems extends unknown[] = [],
-> = TItems["length"] extends TLength ? TItems : BuildTuple<TLength, [...TItems, unknown]>;
-
 /**
- * Type-level numeric increment used by the implicit history builder.
+ * Latest persisted envelope for a document definition.
  *
  * @internal
  */
-export type Increment<TValue extends number> = [...BuildTuple<TValue>, unknown]["length"] & number;
+export type LatestEnvelope<
+  TType extends string,
+  TVersions extends readonly AnyVersionEntry[],
+  TKeys extends EnvelopeKeyConfig,
+> = EnvelopeForKeys<TKeys, TType, LatestVersion<TVersions>, LatestPayload<TVersions>>;
 
 /**
  * Fluent builder returned by {@link version}.
  *
  * @remarks
  * Each call to `.becomes(versionId, schema, migration)` appends the next schema
- * in the linear history and type-checks the migration from the previous
+ * in the linear version chain and type-checks the migration from the previous
  * payload to the next payload.
  *
  * @typeParam TVersions - Tuple of known version entries accumulated so far.
  * @typeParam TContext - Migration context type.
  */
-export interface ExplicitHistoryBuilder<
+export interface VersionChainBuilder<
   TVersions extends readonly AnyVersionEntry[],
   TContext = unknown,
 > {
@@ -357,14 +348,14 @@ export interface ExplicitHistoryBuilder<
    *
    * @internal
    */
-  readonly [HISTORY_BRAND]: {
+  readonly [VERSION_CHAIN_BRAND]: {
     readonly mode: "explicit";
     readonly versions: TVersions;
     readonly context: TContext;
   };
 
   /**
-   * Add the next explicitly labeled version to the history.
+   * Add the next explicitly labeled version to the chain.
    *
    * @param versionId - Durable version label to preserve in persisted
    * envelopes.
@@ -376,69 +367,23 @@ export interface ExplicitHistoryBuilder<
     versionId: TNextId,
     schema: TNextSchema,
     migration: Migration<LatestPayload<TVersions>, InferSchema<TNextSchema>, TContext>,
-  ): ExplicitHistoryBuilder<readonly [...TVersions, VersionEntry<TNextId, TNextSchema>], TContext>;
+  ): VersionChainBuilder<readonly [...TVersions, VersionEntry<TNextId, TNextSchema>], TContext>;
 }
 
 /**
- * Fluent builder returned by {@link schema}.
- *
- * @remarks
- * Version identifiers are generated positionally. The first schema is version
- * `1`, and each `.becomes(schema, migration)` call increments by one.
- *
- * @typeParam TVersions - Tuple of known version entries accumulated so far.
- * @typeParam TNextId - Version id to assign to the next appended schema.
- * @typeParam TContext - Migration context type.
- */
-export interface ImplicitHistoryBuilder<
-  TVersions extends readonly AnyVersionEntry[],
-  TNextId extends number,
-  TContext = unknown,
-> {
-  /**
-   * Type-only metadata used by inference helpers.
-   *
-   * @internal
-   */
-  readonly [HISTORY_BRAND]: {
-    readonly mode: "implicit";
-    readonly versions: TVersions;
-    readonly context: TContext;
-  };
-
-  /**
-   * Add the next positional version to the history.
-   *
-   * @param schema - Schema that validates the next payload shape.
-   * @param migration - Transformation from the previous payload type to the
-   * next payload type.
-   */
-  becomes<TNextSchema extends AnySchema>(
-    schema: TNextSchema,
-    migration: Migration<LatestPayload<TVersions>, InferSchema<TNextSchema>, TContext>,
-  ): ImplicitHistoryBuilder<
-    readonly [...TVersions, VersionEntry<TNextId, TNextSchema>],
-    Increment<TNextId>,
-    TContext
-  >;
-}
-
-/**
- * Erased history builder accepted by {@link defineDocument}.
+ * Erased version-chain builder accepted by {@link defineDocument}.
  *
  * @internal
  */
-export type AnyHistoryBuilder =
-  | ExplicitHistoryBuilder<readonly AnyVersionEntry[], unknown>
-  | ImplicitHistoryBuilder<readonly AnyVersionEntry[], number, unknown>;
+export type AnyVersionChainBuilder = VersionChainBuilder<readonly AnyVersionEntry[], unknown>;
 
 /**
- * Extract the typed version tuple from a history builder.
+ * Extract the typed version tuple from a version-chain builder.
  *
  * @internal
  */
-export type HistoryVersions<THistory> = THistory extends {
-  readonly [HISTORY_BRAND]: {
+export type VersionChainVersions<TVersionChain> = TVersionChain extends {
+  readonly [VERSION_CHAIN_BRAND]: {
     readonly versions: infer TVersions extends readonly AnyVersionEntry[];
   };
 }
@@ -446,12 +391,12 @@ export type HistoryVersions<THistory> = THistory extends {
   : never;
 
 /**
- * Extract the migration context type from a history builder.
+ * Extract the migration context type from a version-chain builder.
  *
  * @internal
  */
-export type HistoryContext<THistory> = THistory extends {
-  readonly [HISTORY_BRAND]: {
+export type VersionChainContext<TVersionChain> = TVersionChain extends {
+  readonly [VERSION_CHAIN_BRAND]: {
     readonly context: infer TContext;
   };
 }
@@ -459,11 +404,11 @@ export type HistoryContext<THistory> = THistory extends {
   : unknown;
 
 /**
- * Per-operation options for opening and migrating documents.
+ * Per-operation options for decoding and migrating documents.
  *
- * @typeParam TContext - Migration context type expected by the history.
+ * @typeParam TContext - Migration context type expected by the version chain.
  */
-export type OpenOptions<TContext = unknown> = {
+export type DecodeOptions<TContext = unknown> = {
   /**
    * Context object passed to each migration.
    *
@@ -479,16 +424,9 @@ export type OpenOptions<TContext = unknown> = {
 };
 
 /**
- * Per-operation options for {@link DocumentDefinition.migrate}.
- *
- * @typeParam TContext - Migration context type expected by the history.
+ * Options for {@link DocumentDefinition.encode}.
  */
-export type MigrateOptions<TContext = unknown> = OpenOptions<TContext>;
-
-/**
- * Options for {@link DocumentDefinition.save}.
- */
-export type SaveOptions = {
+export type EncodeOptions = {
   /**
    * Validate the latest payload before wrapping it in an envelope.
    *
@@ -496,6 +434,100 @@ export type SaveOptions = {
    */
   readonly validate?: boolean;
 };
+
+/**
+ * Factory used to create a latest-version payload.
+ *
+ * @remarks
+ * The `never[]` parameter constraint allows `defineDocument` to infer concrete
+ * factory parameters such as `[name: string]` without unsafe catch-all
+ * parameters.
+ *
+ * @internal
+ */
+export type CreateFactory<TValue> = (...args: never[]) => TValue;
+
+/**
+ * Non-throwing result returned by {@link DocumentDefinition.decode}.
+ *
+ * @remarks
+ * These statuses model ordinary durable-document read outcomes explicitly:
+ * already-current data, valid stale data that was migrated, missing input, data
+ * written by an unsupported version, and invalid data.
+ *
+ * @typeParam TValue - Latest payload type.
+ * @typeParam TEnvelope - Latest persisted envelope type.
+ */
+export type DecodeResult<TValue, TEnvelope> =
+  | {
+      /** Input was already a valid latest-version document. */
+      readonly status: "current";
+      /** Latest payload value. */
+      readonly value: TValue;
+      /** Version read from the input envelope. */
+      readonly version: VersionId;
+      /** Latest persisted envelope for the value. */
+      readonly envelope: TEnvelope;
+    }
+  | {
+      /** Input was valid but older and was migrated to latest. */
+      readonly status: "migrated";
+      /** Latest payload value after migration. */
+      readonly value: TValue;
+      /** Version read from the input envelope. */
+      readonly fromVersion: VersionId;
+      /** Latest document version. */
+      readonly toVersion: VersionId;
+      /** Latest persisted envelope callers may write back. */
+      readonly envelope: TEnvelope;
+    }
+  | {
+      /** Input was absent (`null` or `undefined`). */
+      readonly status: "missing";
+    }
+  | {
+      /** Envelope type matched, but its version is not supported. */
+      readonly status: "unsupported-version";
+      /** Unsupported version read from the envelope. */
+      readonly version: string | number;
+      /** Structured unsupported-version error. */
+      readonly error: BecomesError;
+    }
+  | {
+      /** Envelope, payload, or migration failed validation. */
+      readonly status: "invalid";
+      /** Structured validation or migration error. */
+      readonly error: BecomesError;
+    };
+
+/**
+ * Non-throwing result returned by {@link DocumentDefinition.encode}.
+ *
+ * @remarks
+ * Encoding is a boundary operation for data that may have come from user input,
+ * storage, or another process. Invalid latest payloads are therefore reported as
+ * data in the returned result instead of as exceptions.
+ *
+ * @typeParam TValue - Latest payload type.
+ * @typeParam TEnvelope - Latest persisted envelope type.
+ */
+export type EncodeResult<TValue, TEnvelope> =
+  | {
+      /** Payload was valid and has been wrapped in the latest envelope. */
+      readonly status: "encoded";
+      /** Latest payload value, after schema parsing. */
+      readonly value: TValue;
+      /** Latest document version. */
+      readonly version: VersionId;
+      /** Latest persisted envelope for the value. */
+      readonly envelope: TEnvelope;
+    }
+  | {
+      /** Payload did not satisfy the latest schema. */
+      readonly status: "invalid";
+      /** Structured latest-payload validation error. */
+      readonly error: BecomesError;
+    };
 
 /**
  * Result returned by {@link DocumentDefinition.validate}.
@@ -558,14 +590,18 @@ export type InspectionFailure = {
 };
 
 /**
- * Compiled document definition returned by {@link defineDocument}.
+ * Core document definition returned by {@link defineDocument}.
+ *
+ * @remarks
+ * This base API is always available, regardless of whether the document
+ * definition includes a `create` factory.
  *
  * @typeParam TType - Durable document type string.
  * @typeParam TVersions - Tuple of version entries in authored order.
  * @typeParam TContext - Migration context type.
  * @typeParam TKeys - Resolved envelope key names.
  */
-export interface DocumentDefinition<
+export interface DocumentDefinitionBase<
   TType extends string,
   TVersions extends readonly AnyVersionEntry[],
   TContext = unknown,
@@ -588,48 +624,35 @@ export interface DocumentDefinition<
   };
 
   /**
-   * Create and validate a new latest-version payload.
-   *
-   * @throws {@link BecomesError} with `CREATE_NOT_DEFINED` when no factory was
-   * configured.
-   * @throws {@link BecomesError} with `INVALID_LATEST_PAYLOAD` when the factory
-   * returns data that does not satisfy the latest schema.
-   */
-  create(): LatestPayload<TVersions>;
-
-  /**
-   * Open an unknown persisted envelope and return the latest payload.
+   * Decode an unknown persisted envelope into an explicit read result.
    *
    * @remarks
    * The version is always read from the envelope. Callers should not pass a
-   * separate version hint.
+   * separate version hint. This method performs no filesystem or storage IO.
    *
-   * @throws {@link BecomesError} for invalid envelopes, unsupported versions,
-   * invalid payloads, migration failures, or invalid migration outputs.
+   * This method does not throw for ordinary document-read outcomes. Invalid
+   * data, unsupported versions, missing input, and migration failures are
+   * reported in the returned {@link DecodeResult}.
    */
-  open(raw: unknown, options?: OpenOptions<TContext>): Promise<LatestPayload<TVersions>>;
+  decode(
+    raw: unknown,
+    options?: DecodeOptions<TContext>,
+  ): Promise<DecodeResult<LatestPayload<TVersions>, LatestEnvelope<TType, TVersions, TKeys>>>;
 
   /**
-   * Validate and wrap the latest payload in a persisted envelope.
+   * Encode a latest payload into an explicit write result.
    *
-   * @throws {@link BecomesError} with `INVALID_LATEST_PAYLOAD` when validation
-   * is enabled and the payload does not satisfy the latest schema.
+   * @remarks
+   * This method performs no filesystem or storage IO.
+   *
+   * This method does not throw for ordinary payload validation failures.
+   * Invalid latest payloads are reported in the returned
+   * {@link EncodeResult}.
    */
-  save(
+  encode(
     data: LatestPayload<TVersions>,
-    options?: SaveOptions,
-  ): EnvelopeForKeys<TKeys, TType, LatestVersion<TVersions>, LatestPayload<TVersions>>;
-
-  /**
-   * Migrate an unknown persisted envelope to the latest persisted envelope.
-   *
-   * @throws {@link BecomesError} for invalid envelopes, unsupported versions,
-   * invalid payloads, migration failures, or invalid migration outputs.
-   */
-  migrate(
-    envelope: unknown,
-    options?: MigrateOptions<TContext>,
-  ): Promise<EnvelopeForKeys<TKeys, TType, LatestVersion<TVersions>, LatestPayload<TVersions>>>;
+    options?: EncodeOptions,
+  ): EncodeResult<LatestPayload<TVersions>, LatestEnvelope<TType, TVersions, TKeys>>;
 
   /**
    * Validate the declared envelope and payload without running migrations.
@@ -642,6 +665,53 @@ export interface DocumentDefinition<
    */
   inspect(raw: unknown): InspectionResult;
 }
+
+/**
+ * Optional create API added only when `defineDocument` receives a `create`
+ * factory.
+ *
+ * @typeParam TVersions - Tuple of version entries in authored order.
+ */
+export interface DocumentCreateApi<
+  TVersions extends readonly AnyVersionEntry[],
+  TCreate extends CreateFactory<LatestPayload<TVersions>>,
+> {
+  /**
+   * Create and validate a new latest-version payload.
+   *
+   * @remarks
+   * Parameters match the configured factory passed to `defineDocument`.
+   *
+   * @throws {@link BecomesError} with `INVALID_LATEST_PAYLOAD` when the factory
+   * returns data that does not satisfy the latest schema.
+   */
+  create(...args: Parameters<TCreate>): LatestPayload<TVersions>;
+}
+
+/**
+ * Compiled document definition returned by {@link defineDocument}.
+ *
+ * @remarks
+ * `create()` exists only when the definition was configured with a `create`
+ * factory. Documents without a factory omit the method at the type level and at
+ * runtime.
+ *
+ * @typeParam TType - Durable document type string.
+ * @typeParam TVersions - Tuple of version entries in authored order.
+ * @typeParam TContext - Migration context type.
+ * @typeParam TKeys - Resolved envelope key names.
+ * @typeParam TCreate - Factory type when the create API should be exposed.
+ */
+export type DocumentDefinition<
+  TType extends string,
+  TVersions extends readonly AnyVersionEntry[],
+  TContext = unknown,
+  TKeys extends EnvelopeKeyConfig = DefaultEnvelopeKeys,
+  TCreate extends CreateFactory<LatestPayload<TVersions>> | undefined = undefined,
+> = DocumentDefinitionBase<TType, TVersions, TContext, TKeys> &
+  (TCreate extends CreateFactory<LatestPayload<TVersions>>
+    ? DocumentCreateApi<TVersions, TCreate>
+    : {});
 
 /**
  * Infer the latest payload type from a document definition.
