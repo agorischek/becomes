@@ -29,73 +29,83 @@ export const DOCUMENT_BRAND: unique symbol = Symbol("becomes.document");
 export type VersionId = number;
 
 /**
- * Minimal parser-shaped schema adapter.
- *
- * Any object with a `parse(input): T` method can be used as a `becomes` schema,
- * including Zod schemas and small custom validators.
- *
- * @typeParam T - Payload type produced by the parser.
- */
-export type ParseSchema<T> = {
-  /**
-   * Parse and validate an unknown payload.
-   *
-   * @throws Any schema-specific error when validation fails.
-   */
-  parse(input: unknown): T;
-};
-
-/**
- * Successful result from a `safeParse`-style schema.
- *
- * @typeParam T - Parsed payload type.
- */
-export type SafeParseSuccess<T> = {
-  /** Discriminant indicating a successful parse. */
-  success: true;
-  /** Parsed payload data. */
-  data: T;
-};
-
-/**
- * Failed result from a `safeParse`-style schema.
+ * Standard Schema v1 validator interface.
  *
  * @remarks
- * Different validators expose failures under different property names. The
- * adapter recognizes both `error` and `issues` and falls back to throwing the
- * entire result object.
- */
-export type SafeParseFailure = {
-  /** Discriminant indicating a failed parse. */
-  success: false;
-  /** Optional parser error object. */
-  error?: unknown;
-  /** Optional parser issue list or issue object. */
-  issues?: unknown;
-};
-
-/**
- * Minimal `safeParse`-shaped schema adapter.
+ * This type mirrors the official Standard Schema v1 interface so `becomes` can
+ * accept validators from libraries that implement the `~standard` interop
+ * contract without adding a runtime dependency.
  *
- * @typeParam T - Payload type produced when parsing succeeds.
+ * @typeParam TInput - Input type accepted by the validator.
+ * @typeParam TOutput - Output type produced after validation.
  */
-export type SafeParseSchema<T> = {
-  safeParse(input: unknown): SafeParseSuccess<T> | SafeParseFailure;
-};
+export interface StandardSchemaV1<TInput = unknown, TOutput = TInput> {
+  /** Standard Schema metadata and validation entrypoint. */
+  readonly "~standard": StandardSchemaV1.Props<TInput, TOutput>;
+}
 
 /**
- * Supported schema-like object.
+ * Types associated with {@link StandardSchemaV1}.
+ */
+export namespace StandardSchemaV1 {
+  /** Standard Schema properties exposed under `~standard`. */
+  export interface Props<TInput = unknown, TOutput = TInput> {
+    /** Standard Schema major version. */
+    readonly version: 1;
+    /** Schema library or validator vendor name. */
+    readonly vendor: string;
+    /** Validate an unknown input value. */
+    readonly validate: (value: unknown) => Result<TOutput> | Promise<Result<TOutput>>;
+    /** Optional type-only input and output metadata. */
+    readonly types?: Types<TInput, TOutput> | undefined;
+  }
+
+  /** Result returned from Standard Schema validation. */
+  export type Result<TOutput> = SuccessResult<TOutput> | FailureResult;
+
+  /** Successful validation result. */
+  export interface SuccessResult<TOutput> {
+    /** Validated output value. */
+    readonly value: TOutput;
+    /** Issues are absent on success. */
+    readonly issues?: undefined;
+  }
+
+  /** Failed validation result. */
+  export interface FailureResult {
+    /** Standardized validation issues. */
+    readonly issues: ReadonlyArray<Issue>;
+  }
+
+  /** One standardized validation issue. */
+  export interface Issue {
+    /** Human-readable issue message. */
+    readonly message: string;
+    /** Optional issue path. */
+    readonly path?: ReadonlyArray<PropertyKey | PathSegment> | undefined;
+  }
+
+  /** Object path segment used by some schema libraries. */
+  export interface PathSegment {
+    /** Segment key. */
+    readonly key: PropertyKey;
+  }
+
+  /** Type-only input and output metadata. */
+  export interface Types<TInput = unknown, TOutput = TInput> {
+    /** Input type accepted by the schema. */
+    readonly input: TInput;
+    /** Output type produced by the schema. */
+    readonly output: TOutput;
+  }
+}
+
+/**
+ * Supported schema object.
  *
  * @typeParam T - Payload type inferred from the schema.
  */
-export type StandardSchema<T> = ParseSchema<T> | SafeParseSchema<T>;
-
-/**
- * Alias for {@link StandardSchema}.
- *
- * @typeParam T - Payload type inferred from the schema.
- */
-export type Schema<T> = StandardSchema<T>;
+export type Schema<T> = StandardSchemaV1<unknown, T>;
 
 /**
  * Schema with unknown payload type, used internally when runtime code stores a
@@ -103,10 +113,10 @@ export type Schema<T> = StandardSchema<T>;
  *
  * @internal
  */
-export type AnySchema = StandardSchema<unknown>;
+export type AnySchema = Schema<unknown>;
 
 /**
- * Infer the payload type accepted by a schema adapter.
+ * Infer the payload type produced by a schema.
  *
  * @example
  * ```ts
@@ -114,19 +124,17 @@ export type AnySchema = StandardSchema<unknown>;
  * type TitlePayload = InferSchema<typeof Title>;
  * ```
  *
- * @typeParam TSchema - Schema-like object with `parse` or `safeParse`.
+ * @typeParam TSchema - Standard Schema v1 validator.
  */
-export type InferSchema<TSchema> = TSchema extends {
-  parse(input: unknown): infer T;
-}
-  ? T
-  : TSchema extends {
-        safeParse(input: unknown): infer TResult;
-      }
-    ? TResult extends SafeParseSuccess<infer T>
-      ? T
-      : never
-    : never;
+export type InferSchema<TSchema> =
+  TSchema extends StandardSchemaV1<unknown, infer TOutput> ? TOutput : never;
+
+/**
+ * Value that may be produced immediately or asynchronously.
+ *
+ * @internal
+ */
+export type MaybePromise<T> = T | Promise<T>;
 
 /**
  * Function that transforms a valid payload from one version into a valid payload
@@ -139,13 +147,13 @@ export type InferSchema<TSchema> = TSchema extends {
 export type Migration<From, To, Context = unknown> = (
   from: From,
   context: Context,
-) => To | Promise<To>;
+) => MaybePromise<To>;
 
 /**
  * Type-level entry in a schema version chain.
  *
  * @typeParam TId - Version identifier for the payload schema.
- * @typeParam TSchema - Schema adapter for the payload at this version.
+ * @typeParam TSchema - Schema for the payload at this version.
  */
 export type VersionEntry<TId extends VersionId, TSchema extends AnySchema> = {
   /** Stable version identifier for this schema. */
@@ -445,7 +453,7 @@ export type EncodeOptions = {
  *
  * @internal
  */
-export type CreateFactory<TValue> = (...args: never[]) => TValue;
+export type CreateFactory<TValue> = (...args: never[]) => MaybePromise<TValue>;
 
 /**
  * Non-throwing result returned by {@link DocumentDefinition.decode}.
@@ -652,12 +660,12 @@ export interface DocumentDefinitionBase<
   encode(
     data: LatestPayload<TVersions>,
     options?: EncodeOptions,
-  ): EncodeResult<LatestPayload<TVersions>, LatestEnvelope<TType, TVersions, TKeys>>;
+  ): Promise<EncodeResult<LatestPayload<TVersions>, LatestEnvelope<TType, TVersions, TKeys>>>;
 
   /**
    * Validate the declared envelope and payload without running migrations.
    */
-  validate(raw: unknown): ValidationResult;
+  validate(raw: unknown): Promise<ValidationResult>;
 
   /**
    * Inspect envelope metadata without validating payload data or running
@@ -682,10 +690,10 @@ export interface DocumentCreateApi<
    * @remarks
    * Parameters match the configured factory passed to `defineDocument`.
    *
-   * @throws {@link BecomesError} with `INVALID_LATEST_PAYLOAD` when the factory
-   * returns data that does not satisfy the latest schema.
+   * Rejects with {@link BecomesError} with `INVALID_LATEST_PAYLOAD` when the
+   * factory returns data that does not satisfy the latest schema.
    */
-  create(...args: Parameters<TCreate>): LatestPayload<TVersions>;
+  create(...args: Parameters<TCreate>): Promise<LatestPayload<TVersions>>;
 }
 
 /**

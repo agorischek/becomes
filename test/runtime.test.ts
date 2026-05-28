@@ -2,12 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
   BecomesError,
   defineDocument,
-  parseWithSchema,
   version,
   type DecodeResult,
   type EncodeResult,
   type Schema,
+  type StandardSchemaV1,
 } from "../src/index.js";
+import { parseWithSchema } from "../src/adapter.js";
 import { ensureBecomesError } from "../src/errors.js";
 
 type V1 = {
@@ -383,14 +384,14 @@ describe("document runtime APIs", () => {
     expect(error.cause).toBe(cause);
   });
 
-  test("encodes latest payload with the correct envelope", () => {
-    expect(
+  test("encodes latest payload with the correct envelope", async () => {
+    await expect(
       TestDocument.encode({
         title: "saved",
         count: 7,
         done: true,
       }),
-    ).toEqual({
+    ).resolves.toEqual({
       status: "encoded",
       version: 3,
       value: {
@@ -410,8 +411,8 @@ describe("document runtime APIs", () => {
     });
   });
 
-  test("can skip encode validation", () => {
-    expect(
+  test("can skip encode validation", async () => {
+    await expect(
       TestDocument.encode(
         {
           title: "saved",
@@ -422,7 +423,7 @@ describe("document runtime APIs", () => {
           validate: false,
         },
       ) as unknown,
-    ).toEqual({
+    ).resolves.toEqual({
       status: "encoded",
       version: 3,
       value: {
@@ -442,8 +443,8 @@ describe("document runtime APIs", () => {
     });
   });
 
-  test("reports invalid latest payloads on encode and rejects invalid create output", () => {
-    const error = expectEncodeInvalid(
+  test("reports invalid latest payloads on encode and rejects invalid create output", async () => {
+    const error = await expectEncodeInvalid(
       TestDocument.encode({
         title: "bad",
         count: Number.NaN,
@@ -463,11 +464,11 @@ describe("document runtime APIs", () => {
         }) as V3,
     });
 
-    expect(() => invalidCreate.create()).toThrow(BecomesError);
+    await expect(invalidCreate.create()).rejects.toThrow(BecomesError);
   });
 
-  test("creates latest payloads and omits missing create functions", () => {
-    expect(TestDocument.create()).toEqual({
+  test("creates latest payloads and omits missing create functions", async () => {
+    await expect(TestDocument.create()).resolves.toEqual({
       title: "new",
       count: 0,
       done: false,
@@ -483,7 +484,7 @@ describe("document runtime APIs", () => {
       }),
     });
 
-    expect(documentWithArgs.create("from args", true)).toEqual({
+    await expect(documentWithArgs.create("from args", true)).resolves.toEqual({
       title: "from args",
       count: 9,
       done: true,
@@ -498,7 +499,7 @@ describe("document runtime APIs", () => {
     expect("migrate" in TestDocument).toBe(false);
   });
 
-  test("validates without migration", () => {
+  test("validates without migration", async () => {
     const document = defineDocument({
       type: "tests.validate",
       versions: version(1, v1Schema).becomes(2, v2Schema, () => {
@@ -506,7 +507,7 @@ describe("document runtime APIs", () => {
       }),
     });
 
-    expect(
+    await expect(
       document.validate({
         type: "tests.validate",
         version: 1,
@@ -514,14 +515,14 @@ describe("document runtime APIs", () => {
           title: "old",
         },
       }),
-    ).toEqual({
+    ).resolves.toEqual({
       ok: true,
       type: "tests.validate",
       version: 1,
       latest: false,
     });
 
-    const result = document.validate({
+    const result = await document.validate({
       type: "tests.validate",
       version: 1,
       data: {
@@ -674,11 +675,11 @@ describe("document runtime APIs", () => {
       envelope: raw,
     });
 
-    expect(
+    await expect(
       document.encode({
         title: "custom",
       }),
-    ).toEqual({
+    ).resolves.toEqual({
       status: "encoded",
       value: {
         title: "custom",
@@ -689,42 +690,71 @@ describe("document runtime APIs", () => {
   });
 });
 
-describe("schema adapter and typed errors", () => {
-  test("supports safeParse schemas", () => {
-    const safeSchema: Schema<V1> = {
-      safeParse(input) {
-        try {
+describe("schema validation and typed errors", () => {
+  test("supports Standard Schema validators", async () => {
+    const standardSchema: StandardSchemaV1<unknown, V1> = {
+      "~standard": {
+        version: 1,
+        vendor: "tests",
+        async validate(input) {
+          if (typeof input === "object" && input !== null && !Array.isArray(input)) {
+            const record = input as Record<string, unknown>;
+
+            if (typeof record.title === "string") {
+              return {
+                value: {
+                  title: record.title,
+                },
+              };
+            }
+          }
+
           return {
-            success: true,
-            data: parseWithSchema(v1Schema, input),
+            issues: [
+              {
+                message: "Expected title.",
+                path: ["title"],
+              },
+            ],
           };
-        } catch (error) {
-          return {
-            success: false,
-            error,
-          };
-        }
+        },
       },
     };
 
-    expect(parseWithSchema(safeSchema, { title: "safe" })).toEqual({
-      title: "safe",
+    await expect(parseWithSchema(standardSchema, { title: "standard" })).resolves.toEqual({
+      title: "standard",
     });
-    expect(() => parseWithSchema(safeSchema, { title: 1 })).toThrow();
+    await expect(parseWithSchema(standardSchema, { title: 1 })).rejects.toEqual([
+      {
+        message: "Expected title.",
+        path: ["title"],
+      },
+    ]);
   });
 
-  test("throws safeParse issues and invalid schema errors", () => {
+  test("throws Standard Schema issues and invalid schema errors", async () => {
     const issueSchema: Schema<V1> = {
-      safeParse() {
-        return {
-          success: false,
-          issues: ["bad"],
-        };
+      "~standard": {
+        version: 1,
+        vendor: "tests",
+        validate() {
+          return {
+            issues: [
+              {
+                message: "bad",
+              },
+            ],
+          };
+        },
       },
     };
 
-    expect(() => parseWithSchema(issueSchema, {})).toThrow();
-    expect(() => parseWithSchema({} as Schema<V1>, {})).toThrow(TypeError);
+    await expect(parseWithSchema(issueSchema, {})).rejects.toEqual([
+      {
+        message: "bad",
+      },
+    ]);
+    await expect(parseWithSchema({} as Schema<V1>, {})).rejects.toThrow(TypeError);
   });
 
   test("preserves and wraps BecomesError instances", () => {
@@ -757,12 +787,28 @@ describe("schema adapter and typed errors", () => {
 
 function objectSchema<T>(read: (record: Record<string, unknown>) => T): Schema<T> {
   return {
-    parse(input) {
-      if (typeof input !== "object" || input === null || Array.isArray(input)) {
-        throw new Error("Expected object.");
-      }
+    "~standard": {
+      version: 1,
+      vendor: "tests",
+      validate(input) {
+        try {
+          if (typeof input !== "object" || input === null || Array.isArray(input)) {
+            throw new Error("Expected object.");
+          }
 
-      return read(input as Record<string, unknown>);
+          return {
+            value: read(input as Record<string, unknown>),
+          };
+        } catch (error) {
+          return {
+            issues: [
+              {
+                message: error instanceof Error ? error.message : "Invalid payload.",
+              },
+            ],
+          };
+        }
+      },
     },
   };
 }
@@ -824,10 +870,12 @@ async function expectDecodeUnsupported(
   return result.error;
 }
 
-function expectEncodeInvalid(
-  result: EncodeResult<unknown, unknown>,
+async function expectEncodeInvalid(
+  promise: Promise<EncodeResult<unknown, unknown>>,
   code: BecomesError["code"],
-): BecomesError {
+): Promise<BecomesError> {
+  const result = await promise;
+
   expect(result.status).toBe("invalid");
 
   if (result.status !== "invalid") {

@@ -2,10 +2,30 @@
   "name": "becomes",
   "version": "0.1.0",
   "description": "Type-safe schema evolution for long-lived TypeScript documents.",
+  "keywords": [
+    "documents",
+    "migration",
+    "schema",
+    "schema-evolution",
+    "standard-schema",
+    "typescript",
+    "versioning"
+  ],
+  "homepage": "https://github.com/agorischek/becomes#readme",
+  "bugs": {
+    "url": "https://github.com/agorischek/becomes/issues"
+  },
+  "license": "MIT",
+  "author": "Alex Gorischek <alex.gorischek@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agorischek/becomes.git"
+  },
   "files": [
     "assets",
     "dist",
     "CHANGELOG.md",
+    "LICENSE",
     "README.md"
   ],
   "type": "module",

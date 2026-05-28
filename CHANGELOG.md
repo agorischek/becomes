@@ -11,6 +11,10 @@
   results carrying the latest envelope.
 - Made document boundary reads and writes explicit with non-throwing `decode`
   and `encode` result statuses.
+- Added Standard Schema v1 support and made `encode`, `create`, and `validate`
+  promise-returning APIs so async validators work consistently.
+- Removed legacy `parse(input)` and `safeParse(input)` schema adapter support;
+  schemas now use the Standard Schema v1 contract.
 - Preserved configured argument types for `create` factories.
-- Added typed errors, schema adapter support, inference helpers, runtime tests,
+- Added typed errors, Standard Schema support, inference helpers, runtime tests,
   type-level tests, and enforced 100% coverage gates.

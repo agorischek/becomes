@@ -253,7 +253,7 @@ export function defineDocument<
     },
 
     /** @inheritdoc */
-    encode(
+    async encode(
       data: LatestPayload<VersionChainVersions<TVersionChain>>,
       encodeOptions?: EncodeOptions,
     ) {
@@ -261,7 +261,7 @@ export function defineDocument<
         const payload =
           encodeOptions?.validate === false
             ? data
-            : parsePayload(runtime, runtime.latest, data, "INVALID_LATEST_PAYLOAD");
+            : await parsePayload(runtime, runtime.latest, data, "INVALID_LATEST_PAYLOAD");
 
         return {
           status: "encoded",
@@ -283,11 +283,11 @@ export function defineDocument<
     },
 
     /** @inheritdoc */
-    validate(raw: unknown): ValidationResult {
+    async validate(raw: unknown): Promise<ValidationResult> {
       try {
         const envelope = readEnvelope(runtime, raw);
         const entry = entryForVersion(runtime, envelope.version);
-        parsePayload(runtime, entry, envelope.data, "INVALID_PAYLOAD");
+        await parsePayload(runtime, entry, envelope.data, "INVALID_PAYLOAD");
 
         return {
           ok: true,
@@ -364,8 +364,8 @@ export function defineDocument<
 
     Object.assign(document, {
       /** @inheritdoc */
-      create(...args: never[]) {
-        const created = create(...args);
+      async create(...args: never[]) {
+        const created = await create(...args);
         return parsePayload(runtime, runtime.latest, created, "INVALID_LATEST_PAYLOAD");
       },
     });
@@ -398,7 +398,7 @@ async function migratePayload<TContext>(
   const startEntry = runtime.versions[startIndex] as InternalVersion;
 
   let payload = shouldValidateBefore
-    ? parsePayload(runtime, startEntry, envelope.data, "INVALID_PAYLOAD")
+    ? await parsePayload(runtime, startEntry, envelope.data, "INVALID_PAYLOAD")
     : envelope.data;
 
   for (let index = startIndex + 1; index < runtime.versions.length; index += 1) {
@@ -417,7 +417,7 @@ async function migratePayload<TContext>(
     }
 
     if (shouldValidateAfter) {
-      payload = parsePayload(runtime, nextEntry, payload, "INVALID_MIGRATION_OUTPUT");
+      payload = await parsePayload(runtime, nextEntry, payload, "INVALID_MIGRATION_OUTPUT");
     }
   }
 
@@ -512,14 +512,14 @@ function entryForVersion<TContext>(
  *
  * @internal
  */
-function parsePayload<TContext>(
+async function parsePayload<TContext>(
   runtime: DocumentRuntime<TContext>,
   entry: InternalVersion,
   input: unknown,
   code: "INVALID_PAYLOAD" | "INVALID_MIGRATION_OUTPUT" | "INVALID_LATEST_PAYLOAD",
-): unknown {
+): Promise<unknown> {
   try {
-    return parseWithSchema(entry.schema, input);
+    return await parseWithSchema(entry.schema, input);
   } catch (cause) {
     throw new BecomesError("Payload validation failed.", {
       code,

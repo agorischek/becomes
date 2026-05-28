@@ -5,8 +5,10 @@ import {
   type EncodeResult,
   type InferEnvelope,
   type InferLatest,
+  type InferSchema,
   type InferVersion,
   type Schema,
+  type StandardSchemaV1,
 } from "../src/index.js";
 
 type Expect<T extends true> = T;
@@ -36,22 +38,54 @@ type Context = {
 };
 
 const v1Schema: Schema<V1> = {
-  parse(input) {
-    return input as V1;
+  "~standard": {
+    version: 1,
+    vendor: "tests",
+    validate(input) {
+      return {
+        value: input as V1,
+      };
+    },
   },
 };
 
 const v2Schema: Schema<V2> = {
-  parse(input) {
-    return input as V2;
+  "~standard": {
+    version: 1,
+    vendor: "tests",
+    validate(input) {
+      return {
+        value: input as V2,
+      };
+    },
   },
 };
 
 const v3Schema: Schema<V3> = {
-  parse(input) {
-    return input as V3;
+  "~standard": {
+    version: 1,
+    vendor: "tests",
+    validate(input) {
+      return {
+        value: input as V3,
+      };
+    },
   },
 };
+
+const standardV3Schema: StandardSchemaV1<unknown, V3> = {
+  "~standard": {
+    version: 1,
+    vendor: "tests",
+    validate(input) {
+      return {
+        value: input as V3,
+      };
+    },
+  },
+};
+
+type _StandardSchemaInference = Expect<Equal<InferSchema<typeof standardV3Schema>, V3>>;
 
 const explicitVersions = version<1, typeof v1Schema, Context>(1, v1Schema)
   .becomes(2, v2Schema, (value, context) => {
@@ -116,10 +150,10 @@ type _DecodeResult = Expect<
 type _EncodeResult = Expect<
   Equal<
     ReturnType<typeof ExplicitDocument.encode>,
-    EncodeResult<V3, Extract<ExpectedEnvelope, { version: 3 }>>
+    Promise<EncodeResult<V3, Extract<ExpectedEnvelope, { version: 3 }>>>
   >
 >;
-type _CreateReturn = Expect<Equal<ReturnType<typeof ExplicitDocument.create>, V3>>;
+type _CreateReturn = Expect<Equal<ReturnType<typeof ExplicitDocument.create>, Promise<V3>>>;
 
 const CreateArgsDocument = defineDocument({
   type: "tests.create-args-types",
@@ -132,7 +166,7 @@ const CreateArgsDocument = defineDocument({
 });
 
 type _CreateArgs = Expect<Equal<Parameters<typeof CreateArgsDocument.create>, [string, boolean]>>;
-type _CreateArgsReturn = Expect<Equal<ReturnType<typeof CreateArgsDocument.create>, V3>>;
+type _CreateArgsReturn = Expect<Equal<ReturnType<typeof CreateArgsDocument.create>, Promise<V3>>>;
 
 CreateArgsDocument.create("typed", true);
 // @ts-expect-error create() requires the configured title argument.

@@ -1,68 +1,55 @@
-import type { AnySchema, InferSchema, SafeParseSchema } from "./types.js";
+import type { AnySchema, InferSchema, StandardSchemaV1 } from "./types.js";
 
-type Parser = {
-  parse(input: unknown): unknown;
+type StandardSchemaCandidate = {
+  readonly "~standard": {
+    readonly version?: unknown;
+    readonly validate?: unknown;
+  };
 };
 
 /**
- * Detect parser-style schemas without invoking user code.
+ * Detect Standard Schema v1 validators without invoking user code.
  *
  * @internal
  */
-function hasParse(schema: unknown): schema is Parser {
+function hasStandardSchema(schema: unknown): schema is StandardSchemaV1<unknown, unknown> {
   return (
     typeof schema === "object" &&
     schema !== null &&
-    "parse" in schema &&
-    typeof schema.parse === "function"
+    "~standard" in schema &&
+    typeof (schema as StandardSchemaCandidate)["~standard"] === "object" &&
+    (schema as StandardSchemaCandidate)["~standard"] !== null &&
+    (schema as StandardSchemaCandidate)["~standard"].version === 1 &&
+    typeof (schema as StandardSchemaCandidate)["~standard"].validate === "function"
   );
 }
 
 /**
- * Detect safeParse-style schemas without invoking user code.
- *
- * @internal
- */
-function hasSafeParse(schema: unknown): schema is SafeParseSchema<unknown> {
-  return (
-    typeof schema === "object" &&
-    schema !== null &&
-    "safeParse" in schema &&
-    typeof schema.safeParse === "function"
-  );
-}
-
-/**
- * Parse payload data with a supported schema adapter.
+ * Parse payload data with a Standard Schema validator.
  *
  * @remarks
- * `safeParse` is preferred when present so adapters can avoid throwing on the
- * success path. Parser failures are rethrown as-is here; document APIs catch
- * them and wrap them in stable {@link BecomesError} codes.
+ * Standard Schema issues are thrown as-is here; document APIs catch them and
+ * wrap them in stable {@link BecomesError} codes.
  *
- * @param schema - Schema-like object exposing `parse` or `safeParse`.
+ * @param schema - Standard Schema v1 validator.
  * @param input - Unknown payload data to parse.
  * @returns Parsed payload with the type inferred from the schema.
- * @throws Parser-specific failures, `safeParse` failures, or `TypeError` when
- * the schema has no supported parser method.
+ * @throws Standard Schema issues or `TypeError` when the schema is not a
+ * Standard Schema v1 validator.
  */
-export function parseWithSchema<TSchema extends AnySchema>(
+export async function parseWithSchema<TSchema extends AnySchema>(
   schema: TSchema,
   input: unknown,
-): InferSchema<TSchema> {
-  if (hasSafeParse(schema)) {
-    const result = schema.safeParse(input);
+): Promise<InferSchema<TSchema>> {
+  if (hasStandardSchema(schema)) {
+    const result = await schema["~standard"].validate(input);
 
-    if (result.success) {
-      return result.data as InferSchema<TSchema>;
+    if (result.issues !== undefined) {
+      throw result.issues;
     }
 
-    throw result.error ?? result.issues ?? result;
+    return result.value as InferSchema<TSchema>;
   }
 
-  if (hasParse(schema)) {
-    return schema.parse(input) as InferSchema<TSchema>;
-  }
-
-  throw new TypeError("Schema must expose parse(input) or safeParse(input).");
+  throw new TypeError("Schema must expose Standard Schema v1.");
 }
