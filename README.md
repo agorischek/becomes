@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/wordmark.svg" alt="becomes" height="80">
+</p>
+
 # becomes
 
 Type-safe schema evolution for long-lived TypeScript documents.
@@ -11,11 +15,6 @@ V1 becomes V2 becomes V3
 Each step includes the next schema and the migration from the previous payload
 shape, so the schema registry and migration registry cannot drift apart.
 
-## Install
-
-```sh
-bun add becomes
-```
 
 ## Versions
 
